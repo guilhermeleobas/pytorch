@@ -69,14 +69,6 @@ def _num_outputs(batched_outputs: Union[Tensor, Tuple[Tensor, ...]]) -> int:
 # If value is not a tuple, make a tuple with `value` repeated `num_elements` times
 
 
-def _as_tuple(value: Any, num_elements: int, error_message_lambda: Callable[[], str]) -> Tuple:
-    if not isinstance(value, tuple):
-        return (value,) * num_elements
-    if len(value) != num_elements:
-        raise ValueError(error_message_lambda())
-    return value
-
-
 def _process_batched_inputs(
     in_dims: in_dims_t, args: Tuple, func: Callable
 ) -> Tuple[int, List[Any], List[Any], TreeSpec]:
