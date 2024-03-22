@@ -23,6 +23,7 @@
 
 #include <memory> // for unique_ptr
 #include <utility>
+#include <iostream>
 
 using namespace torch::autograd;
 
@@ -356,6 +357,7 @@ PyObject* THPEngine_run_backward(
     }
   }
 
+  std::cout << "THPEngine run backward\n" << std::endl;
   variable_list outputs;
   {
     pybind11::gil_scoped_release no_gil;

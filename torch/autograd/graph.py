@@ -745,5 +745,6 @@ def _engine_run_backward(t_outputs, *args, **kwargs):
             t_outputs, *args, **kwargs
         )  # Calls into the C++ engine to run the backward pass
     finally:
+        print('fechou')
         if attach_logging_hooks:
             unregister_hooks()  # type: ignore[possibly-undefined]

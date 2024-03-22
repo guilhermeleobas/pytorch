@@ -528,6 +528,10 @@ auto Engine::thread_main(const std::shared_ptr<GraphTask>& graph_task) -> void {
 
   // local_ready_queue should already been initialized when we get into
   // thread_main
+  std::cout << "1. thread_main" << std::endl;
+  std::cout << "graph_roots_: " << graph_task->graph_roots_.size() << std::endl;
+  std::cout << "nodes in graph: " << graph_task->nodes_in_graph_.size() << std::endl;
+
   TORCH_INTERNAL_ASSERT(local_ready_queue != nullptr);
   while (graph_task == nullptr || !graph_task->future_result_->completed()) {
     // local_graph_task represents the graph_task we retrieve from the queue.
@@ -594,6 +598,7 @@ auto Engine::thread_main(const std::shared_ptr<GraphTask>& graph_task) -> void {
 
     // Check if we've completed execution.
     if (local_graph_task->completed()) {
+      std::cout << "2. Engine::thread_main" << std::endl;
       local_graph_task->mark_as_completed_and_run_post_processing();
 
       auto base_owner = local_graph_task->owner_;
@@ -997,6 +1002,7 @@ void Engine::evaluate_function(
   // ensure they're safe to consume in the context of the present
   // func's stream (if applicable). So we guard onto that stream
   // before working with the grads in any capacity.
+  // std::cout << "1. Engine::evaluate_function: " << func->name() << std::endl;
   auto opt_parent_stream = (*func).stream();
   c10::OptionalStreamGuard parent_stream_guard{opt_parent_stream};
 
@@ -1169,15 +1175,19 @@ auto Engine::compute_dependencies(
     if (!will_use_accelerator) {
       will_use_accelerator = fn->stream().has_value();
     }
+    std::cout << "fn: " << fn->name() << std::endl;
     for (const auto& edge : fn->next_edges()) {
       if (auto next_ptr = edge.function.get()) {
         dependencies[next_ptr] += 1;
+        std::cout << " -> " << next_ptr->name() << std::endl;
         const bool was_inserted = task.nodes_in_graph_.insert(next_ptr).second;
         if (was_inserted)
           queue.push_back(next_ptr);
       }
     }
   }
+
+  std::cout << "graph task #nodes: " << task.nodes_in_graph_.size() << std::endl;
 
   if (will_use_accelerator) {
     // Collects current streams for devices where this process has a
@@ -1208,6 +1218,8 @@ auto Engine::execute(
         "your parameters to None after use to break the cycle and avoid the leak.");
   }
 
+  std::cout << "1. engine::execute(...) " << std::endl;
+
   // Allows us to assert no other threads are in backwards
   CompiledAutogradThreadingDebugCheck _thread_check;
   auto compiled_autograd = the_compiled_autograd.load();
@@ -1233,6 +1245,8 @@ auto Engine::execute(
     temp_roots[i] = root_edges[i].function.get();
   }
 
+  std::cout << "2. engine::execute(...) " << std::endl;
+
   auto graph_task = std::make_shared<GraphTask>(
       /* keep_graph */ keep_graph,
       /* create_graph */ create_graph,
@@ -1250,10 +1264,14 @@ auto Engine::execute(
   // Now compute the dependencies for all executable functions
   compute_dependencies(graph_root.get(), *graph_task, min_topo_nr);
 
+  std::cout << "3. engine::execute(...) " << std::endl;
+
   if (!outputs.empty()) {
     graph_task->init_to_execute(
         *graph_root, outputs, accumulate_grad, min_topo_nr);
   }
+
+  std::cout << "3.1 engine::execute(...) " << std::endl;
 
   if (compiled_autograd != nullptr) {
     // see [Note: Compiled Autograd]
@@ -1267,10 +1285,14 @@ auto Engine::execute(
         graph_root, *graph_task, accumulate_grad, outputs);
   }
 
+  std::cout << "3.2 engine::execute(...) " << std::endl;
+
   // Queue the root
   if (skip_dummy_node) {
     InputBuffer input_buffer(root_edges.at(0).function->num_inputs());
     auto input = inputs.at(0);
+
+    std::cout << "3.3.1 engine::execute(...) " << std::endl;
 
     const auto input_stream = InputMetadata(input).stream();
     auto opt_next_stream = root_edges.at(0).function->stream();
@@ -1283,9 +1305,14 @@ auto Engine::execute(
     execute_with_graph_task(
         graph_task, std::move(graph_root), std::move(input_buffer));
   } else {
+    std::cout << "3.3.2 engine::execute(...) " << std::endl;
+
     execute_with_graph_task(
         graph_task, std::move(graph_root), InputBuffer(variable_list()));
   }
+
+  std::cout << "4. engine::execute(...) " << std::endl;
+
   // Avoid a refcount bump for the Future, since we check for refcount in
   // DistEngine (see TORCH_INTERNAL_ASSERT(futureGrads.use_count() == 1)
   // in dist_engine.cpp).
@@ -1308,15 +1335,24 @@ c10::intrusive_ptr<at::ivalue::Future> Engine::execute_with_graph_task(
     const std::shared_ptr<GraphTask>& graph_task,
     std::shared_ptr<Node> graph_root,
     InputBuffer&& input_buffer) {
+
+  std::cout << "1. Engine::execute_with_graph_task" << std::endl;
+
   initialize_device_threads_pool();
   // Lock mutex for GraphTask.
   std::unique_lock<std::mutex> lock(graph_task->mutex_);
 
+  std::cout << "2. Engine::execute_with_graph_task" << std::endl;
+
   auto queue = ready_queue(graph_task->cpu_ready_queue_, input_buffer.device());
+
+  std::cout << "3. Engine::execute_with_graph_task" << std::endl;
 
   // worker_device == NO_DEVICE it's a CPU thread and it's trying to drive the
   // autograd engine with corresponding GraphTask, and its NOT a re-entrant call
   if (worker_device == NO_DEVICE) {
+    std::cout << "4.1 Engine::execute_with_graph_task" << std::endl;
+
     // We set the worker_device to CPU_DEVICE only if worker_device was
     // previously NO_DEVICE. Setting it to CPU afterwards allow us to detect
     // whether this is a re-entrant call or not.
@@ -1341,6 +1377,8 @@ c10::intrusive_ptr<at::ivalue::Future> Engine::execute_with_graph_task(
     // could possibly reuse it for new backward calls.
     worker_device = NO_DEVICE;
   } else {
+    std::cout << "4.2 Engine::execute_with_graph_task" << std::endl;
+
     // If worker_device is any devices (i.e. CPU, CUDA): this is a re-entrant
     //    backward call from that device.
     graph_task->owner_ = worker_device;
@@ -1375,6 +1413,9 @@ c10::intrusive_ptr<at::ivalue::Future> Engine::execute_with_graph_task(
       TORCH_INTERNAL_ASSERT(graph_task->future_result_->completed());
     }
   }
+
+  std::cout << "5. Engine::execute_with_graph_task" << std::endl;
+
   // graph_task_exec_post_processing is done when the Future is marked as
   // completed in mark_as_completed_and_run_post_processing.
   return graph_task->future_result_;
