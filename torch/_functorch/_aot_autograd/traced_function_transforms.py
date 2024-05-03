@@ -25,6 +25,7 @@ from torch._guards import detect_fake_mode
 from torch._prims_common import CUDARngStateHelper
 from torch.fx.experimental.symbolic_shapes import definitely_false, sym_eq
 from torch.nn.utils import stateless
+from torch._subclasses.fake_tensor import is_fake, FakeTensor
 
 from .. import config
 from .collect_metadata_analysis import run_functionalized_fw_and_collect_metadata
@@ -596,15 +597,24 @@ def aot_dispatch_subclass(
     # Another option would be to run our run_functionalized_fw_and_collect_metadata() function
     # directly on the joint, but this would hurt compile time (adding yet another pass through the joint).
     subclass_meta = SubclassMeta()
+    # breakpoint()
 
     def inner_fn(fn, args, *, use_trace_joint: bool):
         # Step 1: wrap tensor inputs into subclasses if necessary
         all_args = wrap_tensor_subclasses_maybe_joint(
             args, is_joint_structure=use_trace_joint, meta=meta
         )
+        print('args', args)
+        print('all args', all_args)
+        # print('inside inner_fn')
+        # def inner_inner(L_x, s1, s0, s2_, s1_):
+        #     return fn(L_x, s2_, s1_)
 
         # Step 2: call the inner function, with our (maybe subclass) inputs
         wrapped_outs = fn(*all_args)
+        # sizes = [s for s in args[0].size()]
+        # print(sizes)
+        # wrapped_outs = inner_inner(*all_args, *sizes)
 
         if use_trace_joint:
             # See Note: [Computing Subclass Metadata about grad_inputs]
@@ -633,6 +643,13 @@ def aot_dispatch_subclass(
     args_unwrapped = unwrap_tensor_subclasses(
         args, is_joint_structure=is_joint_structure
     )
+
+    # outs, _ = pytree.tree_flatten([x.size() for x in args_unwrapped if is_fake(x)])
+    # xs = []
+    # for o in outs:
+    #     if o not in xs:
+    #         xs.append(o)
+    # args_unwrapped = [x for x in args_unwrapped if is_fake(x)] + xs
 
     if is_joint_structure:
         primals_unwrapped = args_unwrapped[0]
@@ -674,16 +691,24 @@ def aot_dispatch_subclass(
 
 
 class PropagateUnbackedSymInts(torch.fx.Interpreter):
+    from torch.fx.node import Argument, Node, Target, map_arg, map_aggregate
+    from typing import Dict
+
+    def placeholder(self, target : 'Target', args : Tuple[Argument, ...], kwargs : Dict[str, Any]) -> Any:
+        r = super().placeholder(target, args, kwargs)
+        return r
+
     def run_node(self, n: torch.fx.Node):
         import sympy
+        print(n.format_node())
 
         result = super().run_node(n)
         # TODO: handle Tensor returns
-        if "example_value" in n.meta:
-            if isinstance(result, torch.SymInt) and isinstance(
-                result.node.expr, sympy.Symbol
-            ):
-                torch._check(result == n.meta["example_value"])
+        # if "example_value" in n.meta:
+        #     if isinstance(result, torch.SymInt) and isinstance(
+        #         result.node.expr, sympy.Symbol
+        #     ):
+        #         torch._check(result == n.meta["example_value"])
 
         return result
 
@@ -691,8 +716,43 @@ class PropagateUnbackedSymInts(torch.fx.Interpreter):
 def create_functional_call(mod, params_spec, params_len, store_orig_mod=False):
     # Redundant with dynamo, but worth having in case this gets invoked elsewhere.
     # https://github.com/pytorch/pytorch/issues/103569
+    print('inside create functional call')
+
+    from torch.fx.interpreter import Transformer
+
 
     def functional_call(*args, **kwargs):
+        print('inside functional_call')
+        print(mod)
+
+        sizes = args[0].size()
+
+        # for sz in sizes:
+        #     node_list = mod.graph.find_nodes(op='placeholder', target=str(sz))
+        #     assert len(node_list) == 1
+        #     [node] = node_list
+        #     with mod.graph.inserting_after(node):
+        #         mod.graph.placeholder(str(sz), (), {})
+        #     mod.graph.erase_node(node)
+        # mod.recompile()
+
+        # t = Transformer(mod)
+        # s1 = mod.graph.find_nodes(op='placeholder', target='s1')[0]
+        # s0 = mod.graph.find_nodes(op='placeholder', target='s0')[0]
+        # with mod.graph.inserting_after(s0):
+        #     sizes = args[0].a.size()
+        #     for sz in sizes:
+        #         if nodes := mod.graph.find_nodes(op='placeholder', target=str(sz)):
+        #             assert len(nodes) == 1
+        #             mod.graph.erase_node(nodes[0])
+        #         mod.graph.placeholder(str(sz), (), {})
+        # for node in (s0, s1):
+        #     mod.graph.erase_node(node)
+        # mod.recompile()
+        # mod_ = mod.recompile()
+        # mod_ = t.transform()
+        # print(mod_.graph)
+
         with stateless._reparametrize_module(
             mod, pytree.tree_unflatten(args[:params_len], params_spec)
         ):

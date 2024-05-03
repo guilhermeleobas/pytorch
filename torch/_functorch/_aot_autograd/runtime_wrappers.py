@@ -340,6 +340,7 @@ def aot_dispatch_subclass_wrapper(
         args.clear()
         # expectation: runtime_fn is a boxed fn
         unwrapped_outs = runtime_fn(unwrapped_args)
+        # print('aot_dispatch_subclass_wrapper')
         wrapped_outs = wrap_tensor_subclasses(
             unwrapped_outs,
             subclass_metas=subclass_metas,

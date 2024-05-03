@@ -130,6 +130,15 @@ def get_proxy_slot(obj, tracer, default=no_default, transform=lambda x: x):
         assert isinstance(obj, py_sym_types), type(obj)
         tracker = tracer.symnode_tracker
 
+    # if str(obj) in ('s0', 's1'):
+    #     s0 = [x for x in list(tracker.sym_node_dict.keys()) if str(x) == 's0'][0]
+    #     s1 = [x for x in list(tracker.sym_node_dict.keys()) if str(x) == 's0'][0]
+    #     d = {
+    #         's0': s0,
+    #         's1': s1
+    #     }
+    #     return transform(tracker.sym_node_dict.get(d.get(str(obj))))
+
     if obj not in tracker:
         if default is no_default:
             raise RuntimeError(f"{obj} is not tracked with proxy for {tracer}")

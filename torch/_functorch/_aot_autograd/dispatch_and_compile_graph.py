@@ -70,6 +70,9 @@ def aot_dispatch_base_graph(
         keep_data_input_mutations=aot_config.keep_inference_input_mutations,
     )
 
+    print('inside aot dispatch base graph')
+    print(flat_fn)
+    print(flat_args)
     fn_to_trace, updated_flat_args = create_functionalized_fn(
         fn_to_trace,
         flat_args,
@@ -136,6 +139,7 @@ def aot_dispatch_base_graph(
         updated_flat_args_subclasses_desugared,
         aot_config=aot_config,
     )
+    # breakpoint()
 
     if aot_config.is_export and mod_when_exporting_non_strict is not None:
         # We update metadata to consider any assigned buffers as buffer mutations.
