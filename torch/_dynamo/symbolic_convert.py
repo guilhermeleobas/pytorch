@@ -107,6 +107,7 @@ from .variables.misc import (
     NullVariable,
     PythonModuleVariable,
     UnknownVariable,
+    UserDefinedExceptionClassVariable,
 )
 from .variables.nn_module import NNModuleVariable, UnspecializedNNModuleVariable
 from .variables.tensor import supported_comparison_ops, SymNodeVariable, TensorVariable
@@ -1689,11 +1690,19 @@ class InstructionTranslatorBase(
             # https://github.com/python/cpython/blob/3.10/Python/ceval.c#L3650-L3665
             exc_instance = self.stack.pop()
 
-        # Users can check exception in 2 ways
-        # 1) except NotImplementedError --> BuilinVariable
-        # 2) except (NotImplemetedError, AttributeError) -> TupleVariable
+        # Users can check exception in 3 ways
+        # 1) except NotImplementedError --> BuiltinVariable
+        # 2) except CustomException --> UserDefinedExceptionClasVariable
+        # 3) except (NotImplemetedError, AttributeError) -> TupleVariable
 
-        if not isinstance(expected_exc_types, (BuiltinVariable, TupleVariable)):
+        if not isinstance(
+            expected_exc_types,
+            (
+                BuiltinVariable,
+                TupleVariable,
+                UserDefinedExceptionClassVariable,
+            ),
+        ):
             unimplemented(
                 f"except has an unsupported types of objects {expected_exc_types}"
             )
@@ -1712,7 +1721,9 @@ class InstructionTranslatorBase(
             ]
 
         for expected_type in expected_types:
-            if not isinstance(expected_type, BuiltinVariable):
+            if not isinstance(
+                expected_type, (BuiltinVariable, UserDefinedExceptionClassVariable)
+            ):
                 unimplemented(
                     f"except has an unsupported types of object {expected_type}"
                 )
@@ -3208,6 +3219,14 @@ class InliningInstructionTranslator(InstructionTranslatorBase):
         else:
             return result
 
+    def update_parent_exn_vt_stack(self):
+        parent = self.parent
+        # parent.exn_vt_stack.extend(self.exn_vt_stack[len(parent.exn_vt_stack) :])
+        p_exn = parent.exn_vt_stack
+        c_exn = self.exn_vt_stack
+        if len(c_exn) > len(p_exn):
+            parent.exn_vt_stack.append(c_exn[-1])
+
     @staticmethod
     def build_inline_tracer(
         parent,
@@ -3316,7 +3335,8 @@ class InliningInstructionTranslator(InstructionTranslatorBase):
             msg = f"Observed exception DURING INLING {code} : {e}"
             # TODO(anijain2305) - This works but we should probably have a
             # global/central data structure for the exception stack.
-            parent.exn_vt_stack.extend(self.exn_vt_stack)
+            # parent.exn_vt_stack.extend(self.exn_vt_stack)
+            self.update_parent_exn_vt_stack()
             log.debug(msg)
             # bubble up the exception to the parent frame.
             raise
@@ -3389,6 +3409,7 @@ class InliningInstructionTranslator(InstructionTranslatorBase):
         )
         self.funcvar = funcvar
         self.parent = parent
+        self.exn_vt_stack = list(parent.exn_vt_stack)
         self.num_calls = parent.num_calls
         self.symbolic_result = None
         self.nn_module_stack = parent.nn_module_stack.copy()

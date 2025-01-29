@@ -180,7 +180,7 @@ class UserDefinedClassVariable(UserDefinedVariable):
         try:
             obj = inspect.getattr_static(self.value, name)
         except AttributeError:
-            obj = None
+            raise_observed_exception(AttributeError, tx)
 
         if isinstance(obj, staticmethod):
             return VariableTracker.build(tx, obj.__get__(self.value), source)
@@ -328,6 +328,10 @@ class UserDefinedClassVariable(UserDefinedVariable):
             return variables.ConstDictVariable(
                 {}, collections.OrderedDict, mutation_type=ValueMutationNew()
             )
+        elif (
+            name == "__enter__" and len(args) == 1 and hasattr(self.value, "__enter__")
+        ):
+            return args[0].enter(tx)
 
         return super().call_method(tx, name, args, kwargs)
 
@@ -403,6 +407,15 @@ class UserDefinedClassVariable(UserDefinedVariable):
             return variables.lists.DequeVariable(
                 items, maxlen=maxlen, mutation_type=ValueMutationNew()
             )
+        elif (
+            self.value is types.MethodType
+            and len(args) == 2
+            and isinstance(args[0], variables.GetAttrVariable)
+            # and hasattr(args[1], "cm_obj")
+        ):
+            cm_obj = args[1].cm_obj
+            fn = getattr(cm_obj, args[0].name).__func__
+            return variables.UserMethodVariable(fn, args[1], source=self.source)
         elif self.value is weakref.ref:
             return variables.WeakRefVariable(args[0])
         elif self.value is functools.partial:
@@ -461,7 +474,7 @@ class UserDefinedClassVariable(UserDefinedVariable):
                 contextlib.redirect_stdout,
                 contextlib.redirect_stderr,
                 contextlib.suppress,
-                contextlib.ExitStack,
+                # contextlib.ExitStack,
                 contextlib.AsyncExitStack,
             ):
                 # We are not changing the behavior of Dynamo as these function were
