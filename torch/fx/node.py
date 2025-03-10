@@ -7,6 +7,8 @@ import types
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Callable, Optional, TYPE_CHECKING, Union
 from typing_extensions import ParamSpec, TypeAlias, TypeVar
+from collections.abc import Mapping, Sequence
+from typing import Any, Callable, Optional, TYPE_CHECKING, TypeVar, Union
 
 import torch
 from torch._C import _fx_map_aggregate, _fx_map_arg, _NodeBase
@@ -566,6 +568,35 @@ class Node(_NodeBase):
     @stack_trace.setter
     def stack_trace(self, trace: Optional[str]) -> None:
         self.meta["stack_trace"] = trace
+
+    def __update_args_kwargs(
+        self, new_args: tuple["Argument", ...], new_kwargs: dict[str, "Argument"]
+    ) -> None:
+        """
+        This API is internal. Do *not* call it directly.
+        """
+
+        def update_users_and_input_nodes(n: Any) -> Any:
+            if isinstance(n, Node):
+                self._input_nodes.setdefault(n)
+                n.users.setdefault(self)
+            return n
+
+        # Clear prior users and input_nodes
+        for old_use in self._input_nodes.keys():
+            old_use.users.pop(self)
+        object.__setattr__(self, "_input_nodes", {})  # bypass Node.__setattr__
+
+        # We do three things in a single pass of the args
+        # - Normalize list->immutable_list, dict->immutable_dict, etc
+        # - Populate self._input_nodes
+        # - Populate arg.users[self] for each arg
+        object.__setattr__(
+            self, "_args", _fx_map_aggregate(new_args, update_users_and_input_nodes)
+        )
+        object.__setattr__(
+            self, "_kwargs", _fx_map_aggregate(new_kwargs, update_users_and_input_nodes)
+        )
 
     def __repr__(self) -> str:
         if self._repr_fn:

@@ -16,7 +16,7 @@ from typing import Any, Callable, Optional
 
 import torch
 import torch.fx.traceback as fx_traceback
-from torch._C import _fx_map_aggregate as map_aggregate, _fx_map_arg as map_arg
+from torch._C import _fx_map_aggregate as map_aggregate
 from torch.utils._traceback import CapturedTraceback
 
 from ._compatibility import compatibility

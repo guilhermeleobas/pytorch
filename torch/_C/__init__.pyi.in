@@ -2721,7 +2721,6 @@ def _fuse_to_static_module(
 # Defined in torch/csrc/fx/node.cpp
 def _fx_map_aggregate(a: Any, fn: Callable[[Any], Any]) -> Any: ...
 def _fx_map_arg(a: Any, fn: Callable[[Any], Any]) -> Any: ...
-
 class _NodeBase:
     _erased: _bool
     _prev: FxNode
