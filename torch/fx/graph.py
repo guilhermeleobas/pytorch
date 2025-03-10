@@ -28,6 +28,7 @@ from .immutable_collections import immutable_dict
 
 from . import _pytree as fx_pytree
 from ._compatibility import compatibility
+from .immutable_collections import immutable_dict
 from .node import _get_qualified_name, _type_repr, Argument, Node, Target
 
 
