@@ -77,6 +77,7 @@ from ..utils import (
     list_methods,
     namedtuple_fields,
     object_has_getattribute,
+    class_has_getattribute,
     proxy_args_kwargs,
     tensortype_to_dtype,
     tuple_methods,
@@ -121,6 +122,16 @@ def is_forbidden_context_manager(ctx):
         f_ctxs.append(m._AssertRaisesRegexWithHighlightContext)
 
     return ctx in f_ctxs
+
+
+@contextlib.contextmanager
+def dynamo_under___getattribute__(tx: "InstructionTranslator"):
+    orig_val = tx.output.current_tracer.under_activation_checkpoint
+    try:
+        tx.output.current_tracer.under_activation_checkpoint = True
+        yield
+    finally:
+        tx.output.current_tracer.under_activation_checkpoint = orig_val
 
 
 class UserDefinedVariable(VariableTracker):
@@ -668,6 +679,18 @@ class UserDefinedClassVariable(UserDefinedVariable):
                     [self, *args],
                     kwargs,
                 )
+        elif class_has_getattribute(self.value) and self.source:
+            from torch._dynamo.side_effects import disallow_side_effects_in__getattribute__
+            with disallow_side_effects_in__getattribute__(tx):
+                with do_not_convert_to_tracable_parameter():
+                    return tx.inline_user_function_return(
+                        VariableTracker.build(
+                            tx, polyfills.instantiate_user_defined_class_object
+                        ),
+                        [self, *args],
+                        kwargs,
+                    )
+
         return super().call_function(tx, args, kwargs)
 
     def is_standard_new(self):
@@ -1085,12 +1108,14 @@ class UserDefinedObjectVariable(UserDefinedVariable):
             getattribute_fn = inspect.getattr_static(
                 type(self.value), "__getattribute__"
             )
+            new_source = None
             if self.source:
                 new_source = AttrSource(self.source, "__getattribute__")
             try:
-                return variables.UserMethodVariable(
-                    getattribute_fn, self, source=new_source
-                ).call_function(tx, [ConstantVariable.create(name)], {})
+                with dynamo_under___getattribute__(tx):
+                    return variables.UserMethodVariable(
+                        getattribute_fn, self, source=new_source
+                    ).call_function(tx, [ConstantVariable.create(name)], {})
             except ObservedAttributeError:
                 # Pass through to __getattr__ if __getattribute__ fails
                 handle_observed_exception(tx)

@@ -160,6 +160,21 @@ class SideEffects:
             and output_graph.current_tx.output.current_tracer.allow_side_effects_under_checkpoint
         )
 
+    def should_allow_side_effects_under___getattribute__(self):
+        output_graph = self.output_graph_weakref()
+        return (
+            output_graph
+            and output_graph.current_tx.output.current_tracer.allow_side_effects_under___getattribute__
+        )
+
+    def is_tracing___getattribute__(self):
+        output_graph = self.output_graph_weakref()
+        return (
+            output_graph
+            and output_graph.current_tx.output.current_tracer.under___getattribute__
+        )
+
+
     def is_reconstructing_generator(self):
         output_graph = self.output_graph_weakref()
 
@@ -177,6 +192,13 @@ class SideEffects:
             return True
         if self.should_allow_side_effects_under_checkpoint():
             return True
+        if (
+            self.is_tracing___getattribute__()
+            and not self.should_allow_side_effects_under___getattribute__()
+        ):
+            raise SideEffectsError(
+                "Mutation under __getattribute__"
+            )
         if self.is_reconstructing_generator():
             # This is missing the case where one mutates a tensor. See
             # test_generator.py::test_reconstruct_generator_tensor_mutation
@@ -1054,3 +1076,14 @@ def disallow_side_effects_in_generator(tx: "InstructionTranslator"):
         yield
     finally:
         tx.output.current_tracer.is_reconstructing_generator = orig_val
+
+
+@contextlib.contextmanager
+def disallow_side_effects_in__getattribute__(tx: "InstructionTranslator"):
+    # assert tx.output.current_tracer.under___getattribute__
+    orig_val = tx.output.current_tracer.allow_side_effects_under___getattribute__
+    try:
+        tx.output.current_tracer.allow_side_effects_under___getattribute__ = False
+        yield
+    finally:
+        tx.output.current_tracer.allow_side_effects_under___getattribute__ = orig_val
