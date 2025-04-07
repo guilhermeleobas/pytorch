@@ -97,6 +97,7 @@ from .misc import (
     AutogradFunctionVariable,
     CellVariable,
     DeletedVariable,
+    ExceptionGroupVariable,
     ExceptionVariable,
     GetAttrVariable,
     LambdaVariable,

@@ -35,7 +35,7 @@ import torch.utils._pytree as pytree
 from .. import config, variables
 from ..bytecode_transformation import create_call_function, create_instruction
 from ..create_parameter_op import do_not_convert_to_tracable_parameter
-from ..exc import raise_observed_exception, unimplemented, unimplemented_v2
+from ..exc import raise_observed_exception, unimplemented, unimplemented_v2, raise_python_observed_exception
 from ..guards import GuardBuilder, install_guard
 from ..mutation_guard import unpatched_nn_module_init
 from ..source import AttrSource, GetItemSource, TypeSource, WeakRefCallSource
@@ -351,7 +351,7 @@ class ExceptionVariable(VariableTracker):
             if isinstance(val, ConstantVariable) and val.value is None:
                 self.__traceback__ = val
             else:
-                unimplemented(f"setattr(ExceptionVariable, {name_var}, {val})")
+                raise_error("__traceback__ must be a traceback or None")
         else:
             unimplemented(f"setattr(ExceptionVariable, {name_var}, {val})")
         return variables.ConstantVariable(None)
@@ -377,12 +377,79 @@ class ExceptionVariable(VariableTracker):
             return variables.ConstantVariable(None)
         elif name == "args":
             return variables.ListVariable(self.args, source=self.source)
+        elif name == "__class__":
+            return variables.BuiltinVariable(self.exc_type)
         return super().var_getattr(tx, name)
 
     def __str__(self):
         return f"{self.__class__.__name__}({self.exc_type})"
 
     __repr__ = __str__
+
+
+if sys.version_info >= (3, 11):
+
+    class ExceptionGroupVariable(ExceptionVariable):
+        def __init__(self, msg, excs, **kwargs):
+            assert istype(msg, ConstantVariable)
+            assert isinstance(excs, variables.ListVariable)
+            if len(excs.items) == 0:
+                from torch._dynamo.symbolic_convert import InstructionTranslator
+                tx = InstructionTranslator.current_tx()
+                raise_python_observed_exception(
+                    TypeError("second argument (exceptions) must be a non-empty sequence"),
+                    tx,
+                )
+
+            super().__init__(exc_type=ExceptionGroup, args=(msg, excs), **kwargs)
+            self.msg = msg
+            self.excs = excs
+
+        def split(self, condition):
+            match, rest = [], []
+
+            # if istype(condition, variables.TupleVariable):
+            #     condition = tuple(c.fn for c in condition.items)
+            # else:
+            #     condition = (condition.fn,)
+
+            for g in self.excs.items:
+                if issubclass(g.exc_type, condition):
+                    match.append(g)
+                else:
+                    rest.append(g)
+
+            # return (match, rest)
+            ConstantNone = ConstantVariable(None)
+            return (
+                ExceptionGroupVariable(self.msg, variables.ListVariable(match)) if match else ConstantNone,
+                ExceptionGroupVariable(self.msg, variables.ListVariable(rest)) if rest else ConstantNone,
+            )
+
+        def subgroup(self, condition):
+            matching, _ = self.match(condition)
+            return matching
+
+        def derive(self, excs):
+            pass
+
+        def var_getattr(self, tx, name):
+            if name == "exceptions":
+                return self.excs
+            elif name == "message":
+                return self.msg
+            return super().var_getattr(tx, name)
+
+        def call_method(self, tx, name, args, kwargs):
+            if name == "split" and not kwargs:
+                return self.split(args)
+            return super().call_method(tx, name, args, kwargs)
+
+        def __str__(self):
+            excs = ", ".join(map(lambda x: x.exc_type.__name__, self.excs.items))
+            return f"{self.__class__.__name__}('{self.msg.value}', [{excs}])"
+
+        __repr__ = __str__
 
 
 class UnknownVariable(VariableTracker):

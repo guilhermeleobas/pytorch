@@ -881,6 +881,54 @@ class ExceptionTests(torch._dynamo.test_case.TestCase):
 
         assert exc2.__context__ is None
 
+    @make_dynamo_test
+    def test_exception_group(self):
+        def fn():
+            try:
+                # Raise an exception group with two ValueErrors, one TypeError, and one SyntaxError
+                raise ExceptionGroup(
+                    "Test Group",
+                    [
+                        ValueError("Error 1"),
+                        ValueError("Error 2"),
+                        TypeError("Type Error"),
+                        SyntaxError("Syntax Problem"),
+                    ],
+                )
+            except* TypeError:
+                # Capture and handle only the TypeError
+                pass
+                # The rest will be automatically re-raised
+
+        try:
+            fn()
+        except ExceptionGroup as eg:
+            self.assertEqual(len(eg.exceptions), 3)
+
+    @make_dynamo_test
+    def test_exception_group_no_match(self):
+        def fn():
+            try:
+                # Raise an exception group with two ValueErrors, one TypeError, and one SyntaxError
+                raise ExceptionGroup(
+                    "Test Group",
+                    [
+                        ValueError("Error 1"),
+                        ValueError("Error 2"),
+                        TypeError("Type Error"),
+                        SyntaxError("Syntax Problem"),
+                    ],
+                )
+            except* AssertionError:
+                # Capture and handle only the TypeError
+                # The rest will be automatically re-raised
+                pass
+
+        try:
+            fn()
+        except ExceptionGroup as eg:
+            self.assertEqual(len(eg.exceptions), 4)
+
 
 instantiate_parametrized_tests(ExceptionTests)
 

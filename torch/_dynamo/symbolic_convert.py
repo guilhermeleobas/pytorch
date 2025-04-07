@@ -146,6 +146,7 @@ from .variables.lists import (
 from .variables.misc import (
     CellVariable,
     ExceptionVariable,
+    ExceptionGroupVariable,
     GetAttrVariable,
     NullVariable,
     PythonModuleVariable,
@@ -1638,7 +1639,9 @@ class InstructionTranslatorBase(
 
     def load_builtin_from_argval(self, argval):
         if argval not in self.f_builtins:
-            raise Unsupported(f"name '{argval}' is not defined")
+            exc.raise_python_observed_exception(
+                NameError(f"name '{argval}' is not defined"), self
+            )
         val = self.f_builtins[argval]
 
         if callable(val):
@@ -1765,6 +1768,11 @@ class InstructionTranslatorBase(
 
         # 1) when user raises exception type
         val = self._create_exception_type(val)
+
+        if not self._isinstance_exception(val):
+            exc.raise_python_observed_exception(
+                TypeError("exceptions must derive from BaseException"), self
+            )
 
         # Handle https://peps.python.org/pep-0479/
         # CPython 3.12+ has a specific bytecode instruction (CALL_INTRINSIC_1 3) for this
@@ -2088,6 +2096,7 @@ class InstructionTranslatorBase(
             expected_exc_types,
             (
                 BuiltinVariable,
+                ExceptionVariable,
                 TupleVariable,
                 UserDefinedExceptionClassVariable,
                 UserDefinedExceptionObjectVariable,
@@ -2121,6 +2130,7 @@ class InstructionTranslatorBase(
                 expected_type,
                 (
                     BuiltinVariable,
+                    ExceptionVariable,
                     UserDefinedExceptionObjectVariable,
                     UserDefinedExceptionClassVariable,
                 ),
@@ -2142,6 +2152,73 @@ class InstructionTranslatorBase(
                 return True
 
         return False
+
+    def CHECK_EG_MATCH(self, inst):
+        match_type = self.stack[-1]
+        group = self.stack[-2]
+
+        # match_type is either an exception class or a tuple of exception classes
+        is_exc = lambda x: isinstance(x, variables.BuiltinVariable) and issubclass(
+            x.fn, Exception
+        )
+        if not (
+            (
+                isinstance(match_type, variables.TupleVariable)
+                and all(is_exc(m) for m in match_type.items)
+            )
+            or (is_exc(match_type))
+        ):
+            exc.raise_python_observed_exception(
+                TypeError(
+                    "catching classes that do not inherit from BaseException is not allowed"
+                ),
+                self,
+            )
+
+        if isinstance(match_type, variables.TupleVariable):
+            if any(issubclass(m.fn, ExceptionGroup) for m in match_type.items):
+                exc.raise_python_observed_exception(
+                    TypeError(
+                        "catching ExceptionGroup with except* is not allowed. Use except instead."
+                    ),
+                    self,
+                )
+
+        if isinstance(match_type, variables.TupleVariable):
+            match_type = tuple(m.fn for m in match_type.items)
+        else:
+            match_type = (match_type.fn,)
+
+        ConstantNone = ConstantVariable(None)
+
+        if istype(group, ConstantVariable) and group.value is None:
+            match = rest = ConstantNone
+        elif istype(group, ExceptionVariable):
+            # if issubclass(group.exc_type, match_type.fn):
+            if issubclass(group.exc_type, match_type):
+                match = ExceptionGroupVariable(
+                    ConstantVariable(""), ListVariable([group])
+                )
+                rest = ConstantNone
+            else:
+                match = ConstantNone
+                rest = group
+        else:
+            assert istype(group, ExceptionGroupVariable)
+            # ExceptionGroup
+            match, rest = group.split(match_type)
+            # match = ExceptionGroupVariable(group.msg, ListVariable(match))
+            # rest = ExceptionGroupVariable(group.msg, ListVariable(match)) if rest else ConstantNone
+
+        # if istype(match, ExceptionGroupVariable):
+        if match:
+            self.popn(2)
+            self.stack.append(match)
+            self.stack.append(rest)
+        else:
+            # assert istype(match, ConstantVariable) and match.value is None
+            self.stack.pop()
+            self.stack.append(ConstantNone)
 
     def CHECK_EXC_MATCH(self, inst):
         self.push(variables.ConstantVariable(self.check_if_exc_matches()))
@@ -3092,6 +3169,73 @@ class InstructionTranslatorBase(
                 gb_type="Missing CALL_INTRINSIC_1 handler",
                 context=f"CALL_INTRINSIC_1 operand: {inst.argval}",
                 explanation=f"No handler implemented for CALL_INTRINSIC_1 {inst.argval} instruction.",
+                hints=[*graph_break_hints.SUPPORTABLE],
+            )
+
+    def PREP_RERAISE_STAR(self, orig, excs):
+        # This function is used by the interpreter to calculate
+        # the exception group to be raised at the end of a
+        # try-except* construct.
+
+        # orig: the original except that was caught.
+        # excs: a list of exceptions that were raised/reraised
+        #         in the except* clauses.
+
+        # Calculates an exception group to raise. It contains
+        # all exceptions in excs, where those that were reraised
+        # have same nesting structure as in orig, and those that
+        # were raised (if any) are added as siblings in a new EG.
+
+        # Returns NULL and sets an exception on failure.
+
+        # def is_same_exception_metadata(exc1, exc2):
+        #     assert self._isinstance_exception(exc1)
+        #     assert self._isinstance_exception(exc2)
+
+        #     attrs = ("__traceback__", "__cause__", "__context__")
+        #     return all(exc1.var_getattr(self, attr) == exc2.var_getattr(self, attr) for attr in attrs)
+
+        assert isinstance(excs, variables.ListVariable)
+        items = excs.items
+        numexcs = len(items)
+
+        if numexcs == 0:
+            self.stack.append(ConstantVariable(None))
+            return
+
+        raised_list = []
+        reraised_list = []
+
+        s = set(items[0].excs.items)
+        for i in range(1, numexcs):
+            other = set(items[i].excs.items)
+            s &= other
+
+        msg = orig.msg if istype(orig, ExceptionGroupVariable) else ConstantVariable("")
+        eg = ExceptionGroupVariable(msg, ListVariable(list(s)))
+        self.stack.append(eg)
+        # self.stack.append(items[0])
+
+        # Split excs into raised and reraised by comparing metadata with orig
+        # CPython compares the metadata here, but we can just compare the VariableTracker ids
+        # breakpoint()
+        # orig_ids = list(map(id, orig.excs))
+        # for item in items:
+        #     assert isinstance(item, variables.ExceptionGroupVariable)
+        #     exc_ids = list(map(id, item.excs))
+
+        # for i in range(numexcs):
+
+    def CALL_INTRINSIC_2(self, inst):
+        if inst.argval == 1:
+            # INTRINSIC_PREP_RERAISE_STAR
+            arg1, arg2 = self.popn(2)
+            self.PREP_RERAISE_STAR(arg1, arg2)
+        else:
+            unimplemented_v2(
+                gb_type="Missing CALL_INTRINSIC_2 handler",
+                context=f"CALL_INTRINSIC_2 operand: {inst.argval}",
+                explanation=f"No handler implemented for CALL_INTRINSIC_2 {inst.argval} instruction.",
                 hints=[*graph_break_hints.SUPPORTABLE],
             )
 

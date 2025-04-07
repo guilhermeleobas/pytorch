@@ -46,6 +46,7 @@ from ..exc import (
     ObservedGeneratorExit,
     ObservedUserStopIteration,
     raise_observed_exception,
+    raise_python_observed_exception,
     SkipFrame,
     unimplemented,
     unimplemented_v2,
@@ -1638,12 +1639,13 @@ class PolyfilledFunctionVariable(VariableTracker):
         if self.can_constant_fold_through() and check_unspec_or_constant_args(
             args, kwargs
         ):
-            result = (
-                self.fn(  # use the original function which is faster than the polyfill
+            try:
+                result = self.fn(  # use the original function which is faster than the polyfill
                     *[x.as_python_constant() for x in args],
                     **{k: v.as_python_constant() for k, v in kwargs.items()},
                 )
-            )
+            except Exception as e:
+                raise_python_observed_exception(e, tx)
             return VariableTracker.build(tx, result)
 
         # Special case for sum on tuple/list of ints

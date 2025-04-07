@@ -23,3 +23,13 @@ def intern(string: str, /) -> str:
 @substitute_in_graph(sys.getrecursionlimit, can_constant_fold_through=True)
 def getrecursionlimit() -> int:
     return sys.getrecursionlimit()
+
+
+@substitute_in_graph(sys.gettrace, can_constant_fold_through=True)
+def gettrace():
+    return sys.gettrace()
+
+
+@substitute_in_graph(sys.settrace, can_constant_fold_through=True)
+def settrace(function, /) -> None:
+    return sys.settrace(function)

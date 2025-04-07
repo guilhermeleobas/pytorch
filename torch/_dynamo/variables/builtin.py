@@ -24,6 +24,7 @@ from ..exc import (
     AttributeMutationError,
     ObservedAttributeError,
     raise_observed_exception,
+    raise_python_observed_exception,
     unimplemented,
     unimplemented_v2,
     Unsupported,
@@ -793,26 +794,31 @@ class BuiltinVariable(VariableTracker):
             )
 
         if inspect.isclass(fn) and (
-            issubclass(fn, Exception)
-            # GeneratorExit doens't inherit from Exception
+            issubclass(fn, BaseException)
+            # GeneratorExit doesn't inherit from Exception
             # >>> issubclass(GeneratorExit, Exception)
             # False
             or fn is GeneratorExit
         ):
+            if sys.version_info >= (3, 11) and issubclass(fn, ExceptionGroup):
 
-            def create_exception_class_object(
-                tx: "InstructionTranslator", args, kwargs
-            ):
-                if fn is AssertionError and not all(
-                    isinstance(x, variables.ConstantVariable)
-                    and isinstance(x.value, str)
-                    for x in args
+                def create_exception_group_object(
+                    tx: "InstructionTranslator", args, kwargs
                 ):
-                    unimplemented("assert with non-string message")
+                    return variables.ExceptionGroupVariable(*args, **kwargs)
 
-                return variables.ExceptionVariable(fn, args, **kwargs)
+                return create_exception_group_object
+            else:
 
-            return create_exception_class_object
+                def create_exception_class_object(
+                    tx: "InstructionTranslator", args, kwargs
+                ):
+                    if fn is AssertionError and not check_constant_args(args, kwargs):
+                        unimplemented("assert with non-string message")
+
+                    return variables.ExceptionVariable(fn, args, **kwargs)
+
+                return create_exception_class_object
 
         if obj.can_insert_in_graph() and not (
             fn is operator.getitem
@@ -891,8 +897,8 @@ class BuiltinVariable(VariableTracker):
                         res = fn(
                             *[x.as_python_constant() for x in args],
                         )
-                    except Exception as exc:
-                        unimplemented(f"constant fold exception: {repr(exc)}")
+                    except Exception as e:
+                        raise_python_observed_exception(e, tx)
                     return VariableTracker.build(tx, res)
 
             else:
@@ -1272,7 +1278,7 @@ class BuiltinVariable(VariableTracker):
             if len(arg.args) == 0:
                 value = f"{arg.exc_type}"
             else:
-                value = ", ".join(a.as_python_constant() for a in arg.args)
+                value = ", ".join(str(a.as_python_constant()) for a in arg.args)
             return variables.ConstantVariable.create(value=value)
 
     def _call_min_max(self, tx: "InstructionTranslator", *args):
