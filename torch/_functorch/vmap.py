@@ -54,11 +54,12 @@ def doesnt_support_saved_tensors_hooks(f):
 def _validate_and_get_batch_size(
     flat_in_dims: list[Optional[int]], flat_args: list
 ) -> int:
-    batch_sizes = [
-        arg.size(in_dim)
-        for in_dim, arg in zip(flat_in_dims, flat_args)
-        if in_dim is not None
-    ]
+    with torch._dynamo.set_fullgraph(False):
+        batch_sizes = [
+            arg.size(in_dim)
+            for in_dim, arg in zip(flat_in_dims, flat_args)
+            if in_dim is not None
+        ]
     if len(batch_sizes) == 0:
         raise ValueError("vmap: Expected at least one Tensor to vmap over")
     if batch_sizes and any(size != batch_sizes[0] for size in batch_sizes):
@@ -309,6 +310,36 @@ def lazy_load_decompositions():
         DECOMPOSITIONS_LOADED = True
 
 
+def scan_chunked_vmap(func, args_spec, out_dims, flat_args, flat_in_dims, randomness, batch_size, chunk_size, **kwargs):
+    from torch._higher_order_ops.scan import scan, _fake_scan
+
+    # n_chunks = (batch_size + chunk_size - 1) // chunk_size
+    chunks: list[list[torch.tensor]] = _get_chunked_inputs(flat_args, flat_in_dims, batch_size, chunk_size)
+    # xs_init = chunks[0]
+    xs = [torch.stack(col) for col in zip(*chunks)]
+
+    def body(carry: torch.tensor, chunk: list[torch.tensor]):
+        out = _flat_vmap(
+            func,
+            batch_size,
+            flat_in_dims,
+            chunk,
+            args_spec,
+            out_dims,
+            randomness,
+            **kwargs,
+        )
+        # if len(carry) == 0:
+        #     return out.clone(), out
+        return torch.concat((carry, out)), out
+
+    # xs = torch.arange(n_chunks)
+    # init, _ = body(torch.empty(0), xs_init)
+    init = torch.empty(0)
+    out, _ = scan(body, init, xs)
+    return out
+
+
 def vmap_impl(func, in_dims, out_dims, randomness, chunk_size, *args, **kwargs):
     lazy_load_decompositions()
     _check_out_dims_is_int_or_int_pytree(out_dims, func)
@@ -317,18 +348,21 @@ def vmap_impl(func, in_dims, out_dims, randomness, chunk_size, *args, **kwargs):
     )
 
     if chunk_size is not None:
-        chunks_flat_args = _get_chunked_inputs(
-            flat_args, flat_in_dims, batch_size, chunk_size
+        return scan_chunked_vmap(
+            func, args_spec, out_dims, flat_args, flat_in_dims, randomness, batch_size, chunk_size, **kwargs,
         )
-        return _chunked_vmap(
-            func,
-            flat_in_dims,
-            chunks_flat_args,
-            args_spec,
-            out_dims,
-            randomness,
-            **kwargs,
-        )
+        # chunks_flat_args = _get_chunked_inputs(
+        #     flat_args, flat_in_dims, batch_size, chunk_size
+        # )
+        # return _chunked_vmap(
+        #     func,
+        #     flat_in_dims,
+        #     chunks_flat_args,
+        #     args_spec,
+        #     out_dims,
+        #     randomness,
+        #     **kwargs,
+        # )
 
     # If chunk_size is not specified.
     return _flat_vmap(
@@ -344,7 +378,7 @@ def vmap_impl(func, in_dims, out_dims, randomness, chunk_size, *args, **kwargs):
 
 
 def get_chunk_sizes(total_elems, chunk_size):
-    n_chunks = n_chunks = total_elems // chunk_size
+    n_chunks = total_elems // chunk_size
     chunk_sizes = [chunk_size] * n_chunks
     # remainder chunk
     remainder = total_elems % chunk_size
@@ -373,7 +407,7 @@ def _get_chunked_inputs(flat_args, flat_in_dims, batch_size, chunk_size):
 
     # transpose chunk dim and flatten structure
     # chunks_flat_args is a list of flatten args
-    chunks_flat_args = zip(*flat_args_chunks)
+    chunks_flat_args = list(zip(*flat_args_chunks))
     return chunks_flat_args
 
 

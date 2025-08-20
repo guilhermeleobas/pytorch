@@ -236,6 +236,7 @@ def check_meta_consistency(
 
     if all_diffs := diff_meta_pairs(lhs_list, rhs_list):
         diff_str = "\n".join(all_diffs)
+        breakpoint()
         raise torch._dynamo.exc.UncapturedHigherOrderOpError(
             f"Expected {lhs_name} and {rhs_name} to have same metadata but found:\n{diff_str}"
         )

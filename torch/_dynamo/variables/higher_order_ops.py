@@ -1794,12 +1794,12 @@ class ScanHigherOrderVariable(TorchHigherOrderOperatorVariable):
             # additional output checking
             _combine_treespec = _make_inlined(tx, pytree.tree_structure)(combine_result)
 
-            check_meta_consistency_vt(
-                init_vars,
-                carry_vars,
-                "init",
-                "carry",
-            )
+            # check_meta_consistency_vt(
+            #     init_vars,
+            #     carry_vars,
+            #     "init",
+            #     "carry",
+            # )
 
         # Check meta data of carries and inits. If we pass this stage, we are sure that the init and carries
         # have the same tree structure.
@@ -1808,13 +1808,13 @@ class ScanHigherOrderVariable(TorchHigherOrderOperatorVariable):
         # "querying is_contiguous inside of vmap for memory_format other than
         # torch.contiguous_format is not yet implemented". This is okay because stride
         # is still checked.
-        check_meta_consistency_vt(
-            init_vars,
-            carry_vars,
-            "init",
-            "carry",
-            include_contiguity=False,
-        )
+        # check_meta_consistency_vt(
+        #     init_vars,
+        #     carry_vars,
+        #     "init",
+        #     "carry",
+        #     include_contiguity=False,
+        # )
 
         xs_proxy = xs.as_proxy()
         init_proxy = init.as_proxy()

@@ -104,6 +104,7 @@ class LazyVariableTracker(VariableTracker):
             self._cache.name_hint = name
 
     def __str__(self) -> str:
+        self.realize()
         if self.is_realized():
             return repr(self.unwrap())
         return super().__repr__()

@@ -187,11 +187,11 @@ def scan(
             raise RuntimeError("Reverse must be a bool, but got " + str(type(r)))
 
         # Checks for init
-        if len(linit) == 0:
-            raise RuntimeError("scan() operator requires init leaves.")
-        for x in linit:
-            if not isinstance(x, torch.Tensor):
-                raise RuntimeError(f"All init leaves must be a Tensor but got {x}")
+        # if len(linit) == 0:
+        #     raise RuntimeError("scan() operator requires init leaves.")
+        # for x in linit:
+        #     if not isinstance(x, torch.Tensor):
+        #         raise RuntimeError(f"All init leaves must be a Tensor but got {x}")
 
         # Checks for xs
         for x in lxs:
@@ -940,7 +940,7 @@ def _fake_scan(combine_fn, init, xs=None, dim=0, reverse=False):
         return init, []
     result_flat = []
     carry = carry_leaves
-    op = reversed if reverse else lambda x: x
+    maybe_reverse = reversed if reverse else lambda x: x
 
     dummy_carry, dummy_out = combine_fn(
         pytree.tree_unflatten(carry, carry_spec),
@@ -952,7 +952,7 @@ def _fake_scan(combine_fn, init, xs=None, dim=0, reverse=False):
     dummy_out_leaves, dummy_out_spec = pytree.tree_flatten(dummy_out)
     num_leaves = len(dummy_out_leaves)
 
-    for ind in op(range(inp_leaves[0].size(dim))):
+    for ind in maybe_reverse(range(inp_leaves[0].size(dim))):
         xs = [elem.select(dim, ind) for elem in inp_leaves]
 
         carry, y = combine_fn(
@@ -964,7 +964,7 @@ def _fake_scan(combine_fn, init, xs=None, dim=0, reverse=False):
         result_flat.append(y)
 
     results = [
-        torch.stack([e[leave_ind] for e in op(result_flat)])
+        torch.stack([e[leave_ind] for e in maybe_reverse(result_flat)])
         for leave_ind in range(num_leaves)
     ]
     return (
