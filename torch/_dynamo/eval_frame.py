@@ -830,6 +830,12 @@ class _TorchDynamoContext:
 
                 try:
                     return fn(*args, **kwargs)
+                    # try:
+                    #     import cProfile, pstats
+                    #     with cProfile.Profile() as pr:
+                    #         return fn(*args, **kwargs)
+                    # finally:
+                    #     pstats.Stats(pr).sort_stats("tottime").print_stats(20)
                 except Unsupported as e:
                     if config.verbose:
                         raise

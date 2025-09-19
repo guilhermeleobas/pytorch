@@ -43,6 +43,7 @@ from ..utils import (
     istype,
     raise_args_mismatch,
     specialize_symnode,
+    isinstance_VT
 )
 from .base import ValueMutationNew, VariableTracker
 from .constant import ConstantVariable

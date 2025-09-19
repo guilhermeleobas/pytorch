@@ -1021,6 +1021,59 @@ def istype(obj: object, allowed_types: Any) -> bool:
     return type(obj) is allowed_types
 
 
+def get_all_subclasses():
+    global __VT_subclasses
+    if len(__VT_subclasses):
+        return __VT_subclasses
+
+    def walk(c):
+        if c in __VT_subclasses:
+            return
+        __VT_subclasses.add(c)
+        for s in c.__subclasses__():
+            walk(s)
+            __VT_subclasses.add(s)
+    from .variables import VariableTracker
+    walk(VariableTracker)
+    return __VT_subclasses
+
+
+def __get_VT_subclass_lookup_table() -> None:
+    global __VT_subclass_lookup_table
+    if len(__VT_subclass_lookup_table):
+        return __VT_subclass_lookup_table
+
+    lookup_table = __VT_subclass_lookup_table
+    subclasses = get_all_subclasses()
+    for a in subclasses:
+        lookup_table[(a, a)] = True
+        for b in subclasses:
+            lookup_table[(a, b)] = issubclass(a, b)
+            lookup_table[(b, a)] = issubclass(b, a)
+    return lookup_table
+
+
+__VT_subclasses = set()
+__VT_subclass_lookup_table = dict()
+
+
+def is_VT_subclass(instance):
+    return type(instance) in get_all_subclasses()
+
+
+def issubclass_VT(cls, allowed_VTs) -> bool:
+    table = __get_VT_subclass_lookup_table()
+    # if istype(allowed_VTs, (tuple, list, set)):
+    #     return any(table[(cls, other)] for other in allowed_VTs)
+    return table[(cls, allowed_VTs)]
+
+
+def isinstance_VT(obj: VariableTracker, allowed_VTs: Any) -> bool:
+    # a = type(obj.realize())
+    a = type(obj)
+    return issubclass_VT(a, allowed_VTs)
+
+
 if sys.version_info >= (3, 12):
     # Some typing classes moved to C in 3.12,
     # which no longer have the _Final mixin.

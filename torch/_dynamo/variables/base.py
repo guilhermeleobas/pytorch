@@ -216,6 +216,9 @@ class AsPythonConstantNotImplementedError(NotImplementedError):
 
 class VariableTrackerMeta(type):
     all_subclasses = []
+    # all_subclasses = set()
+    # lookup_table = dict()
+    lookup_table = [[None] * 200] * 200
 
     def __instancecheck__(cls, instance) -> bool:
         """Make isinstance work with LazyVariableTracker"""
@@ -225,11 +228,43 @@ class VariableTrackerMeta(type):
             cls not in (VariableTracker, variables.LazyVariableTracker)
         ):
             instance = instance.realize()
-        return type.__instancecheck__(cls, instance)
+        # from torch._dynamo.utils import isinstance_VT, is_VT_subclass
+        # if is_VT_subclass(instance):
+        #     return type.__instancecheck__(cls, instance)
+        #     # return isinstance_VT(instance, cls)
+        # return False
+        # return type.__instancecheck__(cls, instance)
+
+        if "number" in type(instance).__dict__:
+        # if type(instance) in VariableTrackerMeta.all_subclasses:
+            a = type(instance.realize()).number
+            b = cls.number
+            if VariableTrackerMeta.lookup_table[a][b] is None:
+                VariableTrackerMeta.lookup_table[a][b] = type.__instancecheck__(cls, instance)
+            r = VariableTrackerMeta.lookup_table[a][b]
+            # return r
+            return type.__instancecheck__(cls, instance)
+        return False
+            # print(instance.realize(), cls, r)
+            # assert r == type.__instancecheck__(cls, instance)
+            # return r
+            # if type(instance) in VariableTrackerMeta.all_subclasses:
+            # t = type(instance)
+            # key = (t, cls)
+            # if (r := VariableTrackerMeta.lookup_table.get(key)) is not None:
+            #     return r
+            # r = issubclass(t, cls)
+            # VariableTrackerMeta.lookup_table[key] = r
+            # return r
+        # return False
+        # return type.__instancecheck__(cls, instance)
 
     def __init__(cls, name, bases, attrs) -> None:
         super().__init__(name, bases, attrs)
         VariableTrackerMeta.all_subclasses.append(cls)
+        if "number" not in cls.__dict__:
+            cls.number = len(VariableTrackerMeta.all_subclasses)
+        # VariableTrackerMeta.all_subclasses.add(cls)
 
 
 class VariableTracker(metaclass=VariableTrackerMeta):
