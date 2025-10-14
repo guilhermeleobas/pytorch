@@ -184,7 +184,275 @@ void _register_functions(PyObject* mod) {
   PyModule_AddFunctions(mod, fns.data());
 }
 
+struct __FixedLengthArray {
+  /*
+  A fixed length stack of VariableTracker objects with fast append and pop.
+  The stack is initialized with a fixed capacity, and holds a pointer to the
+  next free slot. This allows O(1) append/pop operations without resizing the
+  underlying list. Random access is also O(1).
+
+  CPython implements the stack as a contiguous C array with a fixed capacity.
+  When the interpreter executes a PUSH operation, it writes the value to the
+  next free slot and increments the stack pointer. When it executes a POP
+  operation, it decrements the stack pointer and returns the value.
+  The capacity is computed beforehand as "co_nlocalsplus + co_stacksize" in:
+  https://github.com/python/cpython/blob/32e1e0699ffda8ec1dd5a0eb178b052352ab7d31/Objects/frameobject.c#L2122-L2139
+  */
+
+  std::vector<py::object> items;
+  Py_ssize_t top;
+
+  __FixedLengthArray(Py_ssize_t size) : items(size), top(0) {}
+  ~__FixedLengthArray() = default;
+
+  void append(py::object obj) {
+    if (top >= (Py_ssize_t)items.size()) {
+      throw std::runtime_error("stack overflow");
+    }
+    items[top++] = obj;
+  }
+
+  py::object __str__() const {
+    std::string r = "[";
+    for (Py_ssize_t i = 0; i < top; i++) {
+      if (i != 0) {
+        r += ", ";
+      }
+      r += py::str(items[i]);
+    }
+    r += "]";
+    return py::str(r);
+  }
+
+  py::object __repr__() const {
+    std::string r = "[";
+    for (Py_ssize_t i = 0; i < top; i++) {
+      if (i != 0) {
+        r += ", ";
+      }
+      r += py::repr(items[i]);
+    }
+    r += "]";
+    return py::str(r);
+  }
+
+  py::iterator __iter__() {
+    return py::make_iterator(items.begin(), items.begin() + top);
+  }
+
+  void clear() {
+    for (Py_ssize_t i = 0; i < top; i++) {
+      items[i] = py::none();
+    }
+    top = 0;
+  }
+
+  py::object pop() {
+    if (top <= 0) {
+      throw python_error();
+    }
+    top--;
+    return items[top];
+  }
+
+  Py_ssize_t __len__() const {
+    return top;
+  }
+
+  py::object __getitem__(Py_ssize_t idx) {
+    if (idx < 0) {
+      idx += top;
+    }
+
+    if (idx < 0 || idx >= top) {
+      throw python_error();
+    }
+
+    return items[idx];
+  }
+
+  void __setitem__(Py_ssize_t idx, py::object obj) {
+    if (idx < 0) {
+      idx += top;
+    }
+
+    if (idx < 0 || idx >= top) {
+      throw python_error();
+    }
+
+    items[idx] = obj;
+  }
+};
+
+
+struct FixedLengthArrayImpl {
+  FixedLengthArrayImpl(Py_ssize_t size) : _items(size, nullptr), _top(0) {}
+  ~FixedLengthArrayImpl() {
+    clear();
+  }
+
+  PyObject* append(PyObject* obj) {
+    if (_top >= (Py_ssize_t)_items.size()) {
+      throw std::runtime_error("stack overflow");
+    }
+    Py_INCREF(obj);
+    if (_items[_top] != nullptr) {
+      Py_DECREF(_items[_top]);
+    }
+    _items[_top++] = obj;
+    Py_RETURN_NONE;
+  }
+
+  PyObject* pop() {
+    std::cout << "pop " << _top << std::endl;
+    if (_top <= 0) {
+      throw python_error();
+    }
+    _top--;
+    PyObject* obj = _items[_top];
+    _items[_top] = nullptr;
+    return obj;
+  }
+
+  PyObject* clear() {
+    for (Py_ssize_t i = 0; i < _top; i++){
+      Py_DECREF(_items[i]);
+      _items[i] = nullptr;
+    }
+    _top = 0;
+    Py_RETURN_NONE;
+  }
+
+  PyObject* getitem(Py_ssize_t idx) {
+    std::cout << "getitem " << idx << " " << _top << std::endl;
+    if (idx < 0) {
+      idx += _top;
+    }
+
+    if (idx < 0 || idx >= _top) {
+      throw python_error();
+    }
+
+    Py_INCREF(_items[idx]);
+    std::cout << "getitem return none? " << (_items[idx] == nullptr) << std::endl;
+    return _items[idx];
+  }
+
+  int setitem(Py_ssize_t idx, PyObject* obj) {
+    std::cout << "setitem " << idx << " " << _top << " " << _items.size() << std::endl;
+    if (idx < 0) {
+      idx += _top;
+    }
+
+    if (idx < 0 || idx >= _top) {
+      throw python_error();
+    }
+
+    Py_XINCREF(obj);
+    Py_XDECREF(_items[idx]);
+    _items[idx] = obj;
+    return 0;
+  }
+
+  PyObject* iter() {
+    auto lst = THPObjectPtr(PyList_New(_top));
+    for (Py_ssize_t i = 0; i < _top; i++) {
+      Py_INCREF(_items[i]);
+      PyList_SET_ITEM(lst.get(), i, _items[i]);
+    }
+    PyObject* iter = PySeqIter_New(lst);
+    return iter;
+  }
+
+  std::vector<PyObject*> _items;
+  Py_ssize_t _top = 0;
+};
+
 } // anonymous namespace
+
+
+typedef struct {
+  PyObject_HEAD
+  FixedLengthArrayImpl* impl;
+} FixedLengthArray;
+
+
+static int
+FixedLengthArray_init(PyObject *self, PyObject *args, PyObject *kwds) {
+    Py_ssize_t size;
+    if (!PyArg_ParseTuple(args, "n", &size))
+        return -1;
+
+    ((FixedLengthArray*)self)->impl = new FixedLengthArrayImpl(size);
+    return 0;
+}
+
+static PyObject* FixedLengthArray_append(PyObject* self, PyObject* obj) {
+  return ((FixedLengthArray*)self)->impl->append(obj);
+}
+
+static PyObject* FixedLengthArray_pop(
+    PyObject* self,
+    PyObject* Py_UNUSED(ignored)) {
+  return ((FixedLengthArray*)self)->impl->pop();
+}
+
+static PyObject* FixedLengthArray_clear(PyObject* self, PyObject *Py_UNUSED(ignored)) {
+  return ((FixedLengthArray*)self)->impl->clear();
+}
+
+static Py_ssize_t FixedLengthArray_len(PyObject* self) {
+  return ((FixedLengthArray*)self)->impl->_top;
+}
+
+static PyObject* FixedLengthArray_iter(PyObject* self, PyObject *Py_UNUSED(ignored)) {
+  return ((FixedLengthArray*)self)->impl->iter();
+}
+
+static PyObject* FixedLengthArray_getitem(PyObject* self, Py_ssize_t idx) {
+  return ((FixedLengthArray*)self)->impl->getitem(idx);
+}
+
+static int FixedLengthArray_setitem(
+    PyObject* self,
+    Py_ssize_t idx,
+    PyObject* obj) {
+  return ((FixedLengthArray*)self)->impl->setitem(idx, obj);
+}
+
+static PyMethodDef FixedLengthArray_methods[] = {
+  {"append", (PyCFunction)FixedLengthArray_append, METH_O, nullptr},
+  {"pop", (PyCFunction)FixedLengthArray_pop, METH_NOARGS, nullptr},
+  {"clear", (PyCFunction)FixedLengthArray_clear, METH_NOARGS, nullptr},
+  {"__iter__", (PyCFunction)FixedLengthArray_iter, METH_NOARGS, nullptr},
+  {NULL, NULL, 0, NULL}
+};
+
+
+static PySequenceMethods FixedLengthArray_as_sequence = {
+    .sq_length = (lenfunc)FixedLengthArray_len,         /* sq_length */
+    // 0,                                     /* sq_concat */
+    // 0,                                     /* sq_repeat */
+    .sq_item = (ssizeargfunc)FixedLengthArray_getitem,/* sq_item */
+    // 0,                                     /* sq_slice */
+    .sq_ass_item = (ssizeobjargproc)FixedLengthArray_setitem, /* sq_ass_item */
+};
+
+static PyTypeObject FixedLengthArrayType = {
+    PyVarObject_HEAD_INIT(NULL, 0)
+    .tp_name = "mymodule.Stack",
+    .tp_basicsize = sizeof(FixedLengthArray),
+    .tp_itemsize = 0,
+    // .tp_dealloc = (destructor)FixedLengthArray_dealloc,
+    .tp_as_sequence = &FixedLengthArray_as_sequence,
+    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,
+    .tp_doc = "Fixed length array stack",
+    .tp_methods = FixedLengthArray_methods,
+    .tp_init = (initproc)FixedLengthArray_init,
+    .tp_new = PyType_GenericNew,
+    // .tp_str = (reprfunc)FixedLengthArray_str,
+    // .tp_repr = (reprfunc)FixedLengthArray_repr,
+};
 
 void initDynamoBindings(PyObject* torch) {
   PyObject* dynamo = PyModule_Create(&_module);
@@ -216,6 +484,20 @@ void initDynamoBindings(PyObject* torch) {
       PyModule_AddObject(dynamo, "compiled_autograd", compiled_autograd) != 0) {
     throw python_error();
   }
+
+  PyModule_AddType(dynamo, &FixedLengthArrayType);
+
+  // py::class_<FixedLengthArray>(dynamo, "Stack")
+  //     .def(py::init<Py_ssize_t>())
+  //     .def("append", &FixedLengthArray::append)
+  //     .def("pop", &FixedLengthArray::pop)
+  //     .def("clear", &FixedLengthArray::clear)
+  //     .def("__getitem__", &FixedLengthArray::__getitem__)
+  //     .def("__setitem__", &FixedLengthArray::__setitem__)
+  //     .def("__iter__", &FixedLengthArray::__iter__)
+  //     .def("__str__", &FixedLengthArray::__str__)
+  //     .def("__repr__", &FixedLengthArray::__repr__)
+  //     .def("__len__", &FixedLengthArray::__len__);
 
   auto m = py::handle(eval_frame).cast<py::module>();
 
