@@ -105,6 +105,7 @@ from torch.testing._internal.common_utils import (
     scoped_load_inline,
     set_default_dtype,
     skipIfCppFakeTensor,
+    skipIfFrameHookEnabled,
     skipIfHpu,
     skipIfNNModuleInlined,
     skipIfWindows,
@@ -13953,6 +13954,11 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
         IS_S390X,
         "test_recursion_depth_guards_nested_graph_breaks fails on s390x and python 3.12",
     )
+    # co_framesize (=2201) of the new code object is to big to be allocated
+    # it works on Dynamo because THP_PyThreadState_BumpFramePointerSlow reflects
+    # the old version of _PyThreadState_PushFrame function. The new one, which is
+    # in CPython 3.14, will just bail out if there's not enough space on the stack.
+    @skipIfFrameHookEnabled
     def test_recursion_depth_guards(self):
         @torch.compile(dynamic=True, backend="eager")
         def foo(*args, **kwargs):
