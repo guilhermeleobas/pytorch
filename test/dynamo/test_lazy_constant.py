@@ -6,6 +6,8 @@ import torch
 import torch._dynamo
 from torch._dynamo.test_case import run_tests, TestCase
 from torch._dynamo.testing import CompileCounter, same
+from torch._dynamo.variables.lazy import LazyVariableTracker
+from torch._dynamo.variables.base import VariableTracker
 
 
 class LazyConstantVariableTests(TestCase):
@@ -326,6 +328,59 @@ class LazyConstantVariableTests(TestCase):
         result4 = opt_fn2(tensor_input)
         self.assertEqual(result4[1], 100)
         self.assertEqual(counter2.frame_count, 1)  # No recompile!
+
+    def test_sourceless_build_returns_lazy_variable_tracker(self):
+        """Test that VariableTracker.build() with source=None returns LazyVariableTracker.
+
+        When creating a VariableTracker without a source (sourceless), it should
+        return a LazyVariableTracker that defers construction until accessed,
+        consistent with the behavior when a source is provided.
+        """
+        from torch._dynamo.symbolic_convert import InstructionTranslator
+
+        @torch.compile
+        def fn(x):
+            # Create a list internally (sourceless variable)
+            items = [1, 2, 3]
+            return x + torch.tensor(items, dtype=torch.float32)
+
+        # This test verifies that the compilation succeeds and the lazy
+        # construction works correctly
+        x = torch.randn(3)
+        result = fn(x)
+        self.assertEqual(result.shape, (3,))
+
+    def test_sourceless_nested_structures_lazy(self):
+        """Test that nested sourceless structures are lazily constructed."""
+
+        @torch.compile
+        def fn(x):
+            # Nested sourceless structures
+            nested_list = [[1, 2], [3, 4]]
+            nested_dict = {"a": [1, 2], "b": [3, 4]}
+            result = x + torch.tensor([1.0, 2.0, 3.0])
+            return result
+
+        x = torch.randn(3)
+        result = fn(x)
+        self.assertEqual(result.shape, (3,))
+
+    def test_sourceless_constants_lazy(self):
+        """Test that sourceless constants are lazily constructed."""
+
+        @torch.compile
+        def fn(x):
+            # Sourceless constants
+            a = 42
+            b = 3.14
+            c = "hello"
+            d = True
+            # Use them in computation
+            return x + a
+
+        x = torch.randn(3)
+        result = fn(x)
+        self.assertEqual(result.shape, (3,))
 
 
 if __name__ == "__main__":

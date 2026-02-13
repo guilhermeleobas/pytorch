@@ -20,8 +20,6 @@ class LazyCache:
     """Container to cache the real VariableTracker"""
 
     def __init__(self, value: Any, source: Any) -> None:
-        if not isinstance(value, LazySymNodeFormatString):
-            assert source
         self.value = value
         self.source = source
         self.name_hint: str | None = None
@@ -35,6 +33,9 @@ class LazyCache:
         tx = InstructionTranslator.current_tx()
 
         if isinstance(self.value, LazySymNodeFormatString):
+            self.vt = builder.SourcelessBuilder.create(tx, self.value)
+        elif self.source is None:
+            # Sourceless value - use SourcelessBuilder
             self.vt = builder.SourcelessBuilder.create(tx, self.value)
         else:
             # Pass allow_lazy_constant=False to prevent VariableBuilder from
