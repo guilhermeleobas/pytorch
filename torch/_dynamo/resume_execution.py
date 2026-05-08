@@ -338,7 +338,18 @@ class ContinueExecutionCache:
         key = tuple(key)
         if key not in cls.cache[code]:
             cls.cache[code][key] = cls.generate(code, lineno, init_offset, *key)
-        return cls.cache[code][key]
+        resume_code = cls.cache[code][key]
+        # In sys.monitoring mode, resume functions run as fresh frames and must
+        # be intercepted, but PY_START only fires on code objects we explicitly
+        # arm with local events. Instrument the resume code here (idempotent);
+        # no-op in the default / frame-hook modes.
+        from torch._C._dynamo.eval_frame import is_sys_monitoring_enabled
+
+        if is_sys_monitoring_enabled():
+            from .sys_monitoring import instrument_code
+
+            instrument_code(resume_code)
+        return resume_code
 
     @classmethod
     def generate(

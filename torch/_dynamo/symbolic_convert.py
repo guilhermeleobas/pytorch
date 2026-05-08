@@ -5949,6 +5949,23 @@ class InliningInstructionTranslator(InstructionTranslatorBase):
                 kwargs,
                 allow_nested_graph_breaks=allow_nested_graph_breaks,
             )
+            # In sys.monitoring LOCAL-events mode, only the entry and resume code
+            # objects are statically armed. A function reached only as a callee
+            # (module-level function, method on another class) is inlined here
+            # during tracing, but if that inlining later graph-breaks -- via a
+            # resume that re-calls it, or a skipped frame that calls it from
+            # eager code -- it runs as a fresh, un-armed frame and is never
+            # intercepted. Arm it now: build_inline_tracer has already rejected
+            # skipped functions (check_inlineable), so this only arms real
+            # compile targets. Idempotent and a no-op in default/frame-hook
+            # modes. Recursive (like the entry code object) so the callee's own
+            # nested lexical defs are armed too.
+            from torch._C._dynamo.eval_frame import is_sys_monitoring_enabled
+
+            if is_sys_monitoring_enabled():
+                from .sys_monitoring import instrument_code
+
+                instrument_code(func.get_code())
             return tracer.inline_call_()
 
     @staticmethod

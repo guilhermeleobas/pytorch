@@ -58,6 +58,7 @@ from torch import _guards
 # see discussion at https://github.com/pytorch/pytorch/issues/120699
 from torch._C._dynamo.eval_frame import (  # noqa: F401
     get_eval_frame_isolate_recompiles_id,
+    is_sys_monitoring_enabled,
     reset_code,
     set_code_exec_strategy,
     set_eval_frame,
@@ -167,6 +168,12 @@ cached_backends: dict[int, CompilerFn] = {}
 unset = Unset.token
 
 _in_optimized_module = False
+
+# sys.monitoring mode (PYTORCH_USE_SYS_MONITORING=1) is selected by env var at
+# process start, so this is constant for the process lifetime. When on, Dynamo
+# instruments individual code objects with local PY_START events instead of
+# relying on the eval-frame hook firing on every frame.
+_use_sys_monitoring = is_sys_monitoring_enabled()
 
 
 if DISABLE_JUSTKNOBS:
@@ -1226,6 +1233,23 @@ class _TorchDynamoContext:
                 )
 
                 _maybe_set_eval_frame(_callback_from_stance(callback))
+
+                # In sys.monitoring mode, PY_START only fires on code objects we
+                # explicitly instrument (local events), so arm the entry code
+                # before it runs. No-op in the default / frame-hook modes.
+                if _use_sys_monitoring:
+                    from .sys_monitoring import instrument_code
+
+                    instrument_code(getattr(fn, "__code__", None))
+                    # torch.compile(module) wraps ``module.__call__`` (a skipped
+                    # nn.Module frame); the code Dynamo actually compiles is the
+                    # module's ``forward``, reached through the skipped
+                    # ``_wrapped_call_impl`` / ``_call_impl`` frames. Arm it too.
+                    fn_self = getattr(fn, "__self__", None)
+                    if isinstance(fn_self, torch.nn.Module):
+                        instrument_code(
+                            getattr(type(fn_self).forward, "__code__", None)
+                        )
 
                 # Snapshot the local dispatch key set onto a C++ thread-local
                 # stack so it can be restored after the compiled call, matching
