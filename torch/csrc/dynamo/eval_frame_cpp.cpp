@@ -394,7 +394,7 @@ PyObject* dynamo__custom_eval_frame(
 
     DEBUG_TRACE("eval default %s", get_frame_name(frame));
 
-    if (use_frame_hook()) {
+    if (dynamo_uses_code_replacement()) {
       eval_result = dynamo_frame_hook_default(tstate, frame, throw_flag);
     } else {
       eval_result = dynamo_eval_frame_default(tstate, frame, throw_flag);
@@ -463,7 +463,7 @@ PyObject* dynamo__custom_eval_frame(
       debugger_cb(py::handle((PyObject*)cached_code));
     }
 
-    if (use_frame_hook()) {
+    if (dynamo_uses_code_replacement()) {
       eval_result = dynamo_frame_hook_custom(
           tstate,
           frame,
@@ -488,7 +488,15 @@ PyObject* dynamo__custom_eval_frame(
     }
   };
 
-  auto fail = [&]() { clear_old_frame_if_python_312_plus(tstate, frame); };
+  auto fail = [&]() {
+    // In code-replacement mode (frame_hook / sys.monitoring) we don't own the
+    // frame's lifecycle: CPython is still using it and will tear it down
+    // itself.  Calling clear_old_frame_if_python_312_plus here would trip the
+    // "current_frame != frame" assertion in THP_PyFrame_Clear.
+    if (!dynamo_uses_code_replacement()) {
+      clear_old_frame_if_python_312_plus(tstate, frame);
+    }
+  };
 
 #if IS_PYTHON_3_12_PLUS
   // skip tracing the frame if CPython is in a tracing state (e.g.
