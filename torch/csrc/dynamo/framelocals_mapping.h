@@ -47,11 +47,10 @@ using FrameLocalsFrameType = PyFrameObject;
 typedef struct VISIBILITY_HIDDEN FrameLocalsMapping {
  private:
   py::object _code_obj;
-  // can't use localsplus directly due to closure variables:
-  // - in 3.11+, the closure vars in the frame's closure object and
-  //   the corresponding localsplus entry is nullptr
-  // - regardless of Python version, we need to unbox the cell variable
-  std::vector<py::handle> _framelocals;
+  // Owned references to the frame's localsplus values (cells/free vars unboxed),
+  // indexed by localsplus index. Owned rather than borrowed so the mapping does
+  // not depend on the frame outliving it.
+  std::vector<py::object> _framelocals;
 
   py::object _dict{py::none()};
 
