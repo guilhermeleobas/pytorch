@@ -1092,7 +1092,8 @@ class OutputGraph(OutputGraphCommon):
         name=None (a view of the whole dict), if it deleted any name."""
         entry = self.deleted_globals_by_dict.get(id(globals_dict))
         if entry is not None and (name is None or name in entry[1]):
-            self.deleted_global_access_unsupported(f"name: {name}")
+            context = "module __dict__" if name is None else f"name: {name}"
+            self.deleted_global_access_unsupported(context)
 
     def track_generator(self, gen: "LocalGeneratorObjectVariable") -> None:
         self.local_generators.append(gen)

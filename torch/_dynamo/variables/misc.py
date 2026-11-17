@@ -1766,16 +1766,26 @@ class PythonModuleVariable(VariableTracker):
     def __repr__(self) -> str:
         return f"PythonModuleVariable({self.value})"
 
+    def check_deleted_global_access(
+        self, tx: "InstructionTranslatorBase", name: str
+    ) -> None:
+        """Graph-break on a read of a name this trace deleted from the module,
+        or of the whole __dict__ after any delete. A pending write to the name
+        is read back from side effects instead."""
+        if not tx.output.deleted_globals_by_dict:
+            return
+        if name == "__dict__":
+            tx.output.check_deleted_global_access(self.value.__dict__, None)
+        elif not tx.output.side_effects.has_pending_mutation_of_attr(self, name):
+            tx.output.check_deleted_global_access(self.value.__dict__, name)
+
     def tp_getattro_impl(
         self, tx: "InstructionTranslatorBase", name: str
     ) -> VariableTracker:
         if tx.output.side_effects.has_pending_mutation_of_attr(self, name):
             return tx.output.side_effects.load_attr(self, name)
 
-        if tx.output.deleted_globals_by_dict:
-            tx.output.check_deleted_global_access(
-                self.value.__dict__, None if name == "__dict__" else name
-            )
+        self.check_deleted_global_access(tx, name)
 
         attr_value = None
         if self.is_torch or name not in self.value.__dict__:

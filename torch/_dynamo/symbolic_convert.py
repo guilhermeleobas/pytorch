@@ -2562,15 +2562,6 @@ class InstructionTranslatorBase(
     def LOAD_CONST(self, inst: Instruction) -> None:
         self.push(self._load_const(inst))
 
-    def _global_deleted_in_trace(self, item: VariableTracker, name: str) -> bool:
-        side_effects = self.output.side_effects
-        if not side_effects.has_pending_mutation_of_attr(item, name):
-            return False
-        return isinstance(
-            side_effects.load_attr(item, name, deleted_ok=True),
-            variables.DeletedVariable,
-        )
-
     def _load_global(self, inst: Instruction) -> None:
         name = inst.argval
 
@@ -2582,21 +2573,20 @@ class InstructionTranslatorBase(
                     raise AssertionError("expected name in self.f_builtins to be true")
                 self.exec_recorder.builtins[name] = self.f_builtins[name]
 
-        if name not in self.f_globals and name not in self.symbolic_globals:
-            return self.load_builtin(inst)
-
         if name in self.symbolic_globals:
-            variable = self.output.side_effects[self.symbolic_globals[name]]
-            if not self.output.side_effects.has_pending_mutation_of_attr(
+            side_effects = self.output.side_effects
+            variable = side_effects[self.symbolic_globals[name]]
+            # No pending store: a delete of an absent name raised without
+            # storing, and eager raises on the read too.
+            if not side_effects.has_pending_mutation_of_attr(
                 variable, name
-            ):
-                # A delete of an absent name raised without storing; eager
-                # raises on the read too.
+            ) or side_effects.is_attr_deleted(variable, name):
                 return self.load_builtin(inst)
-            if self._global_deleted_in_trace(variable, name):
-                return self.load_builtin(inst)
-            self.push(self.output.side_effects.load_global(variable, name))
+            self.push(side_effects.load_global(variable, name))
             return
+
+        if name not in self.f_globals:
+            return self.load_builtin(inst)
 
         value = self.f_globals[name]
         self.push(VariableTracker.build(self, value, GlobalSource(name)))
@@ -2618,10 +2608,11 @@ class InstructionTranslatorBase(
             self.PUSH_NULL(inst)
 
     def _global_variable(self, name: str) -> VariableTracker:
-        if name not in self.symbolic_globals:
-            self.symbolic_globals[name] = object()  # type: ignore[assignment]  # sentinel object
+        if name in self.symbolic_globals:
+            return self.output.side_effects[self.symbolic_globals[name]]
+        sentinel = self.symbolic_globals[name] = object()  # type: ignore[assignment]
         return self.output.side_effects.track_global_existing(
-            GlobalSource(name), self.symbolic_globals[name]
+            GlobalSource(name), sentinel
         )
 
     def STORE_GLOBAL(self, inst: Instruction) -> None:
@@ -2646,56 +2637,39 @@ class InstructionTranslatorBase(
     def _delete_global(self, name: str, target: VariableTracker) -> None:
         """Guard the name, raise what eager raises, and sync a dropped tensor."""
         side_effects = self.output.side_effects
-        present = name in self.f_globals
-        guard_builder = (
-            GuardBuilder.DICT_CONTAINS if present else GuardBuilder.DICT_NOT_CONTAINS
-        )
-        install_guard(
-            self._globals_dict_source.make_guard(
-                functools.partial(guard_builder, key=name)
-            )
-        )
+        module_name, module = self._globals_module
+        bound = name in self.f_globals
+        # Guard membership on the dict itself, since GlobalSource(name) raises
+        # for an absent name.
+        dict_source = AttrSource(self.import_source(module_name), "__dict__")
+        guard = GuardBuilder.DICT_CONTAINS if bound else GuardBuilder.DICT_NOT_CONTAINS
+        install_guard(dict_source.make_guard(functools.partial(guard, key=name)))
         # A pending write to the module through the module object, or an
         # already-materialized globals-dict VT, races the replayed delete: the
         # dict replay rebuilds from a snapshot after it.
-        module_vt = None
-        registered_module = _registered_module_for_globals(
-            self.f_globals.get("__name__"), self.f_globals
-        )
-        if registered_module is not None and registered_module[1] in side_effects:
-            module_vt = side_effects[registered_module[1]]
+        module_vt = side_effects.id_to_variable.get(id(module))
         if self.f_globals in side_effects or (
             module_vt is not None
             and module_vt is not target
             and side_effects.has_pending_mutation_of_attr(module_vt, name)
         ):
             self.output.deleted_global_access_unsupported(f"name: {name}")
-        pending_on_target = side_effects.has_pending_mutation_of_attr(target, name)
-        if pending_on_target:
-            if self._global_deleted_in_trace(target, name):
-                raise_name_error(self, name)
-        elif not present:
+        if side_effects.has_pending_mutation_of_attr(target, name):
+            bound = not side_effects.is_attr_deleted(target, name)
+        if not bound:
             raise_name_error(self, name)
         # A pre-existing global's tensor is not covered: syncing its dealloc
         # would need a guard on the tensor identity, which is not tracked.
         self._maybe_sync_dealloc_attr(target, name)
-        # The delete is committed. Remember it so later module-object or
-        # module-__dict__ accesses to the name graph-break instead of
-        # racing the replayed delete. The entry keeps the dict alive so its
-        # id() key cannot be reused.
-        entry = self.output.deleted_globals_by_dict.get(id(self.f_globals))
-        if entry is None:
-            self.output.deleted_globals_by_dict[id(self.f_globals)] = (
-                self.f_globals,
-                {name},
-            )
-        else:
-            entry[1].add(name)
+        # Later module-object or module-__dict__ accesses to the name
+        # graph-break instead of racing the replayed delete. The entry keeps
+        # the dict alive so its id() key cannot be reused.
+        self.output.deleted_globals_by_dict.setdefault(
+            id(self.f_globals), (self.f_globals, set())
+        )[1].add(name)
 
     @functools.cached_property
-    def _globals_dict_source(self) -> Source:
-        # Guard membership on the dict itself, since GlobalSource(name) raises
-        # for an absent name.
+    def _globals_module(self) -> tuple[str, types.ModuleType]:
         registered_module = _registered_module_for_globals(
             self.f_globals.get("__name__"), self.f_globals
         )
@@ -2709,8 +2683,7 @@ class InstructionTranslatorBase(
                 ),
                 hints=[*graph_break_hints.SUPPORTABLE],
             )
-        module_name, _ = registered_module
-        return AttrSource(self.import_source(module_name), "__dict__")
+        return registered_module
 
     # Keyed by module_name alone, not the whole argument tuple as @cache_method
     # would key it, so a later argument cannot silently split the memo. Per
@@ -3505,21 +3478,10 @@ class InstructionTranslatorBase(
 
     def _load_attr(self, attr: Any) -> None:
         obj = self.pop().realize()
-        if (
-            self.output.deleted_globals_by_dict
-            and isinstance(obj, variables.PythonModuleVariable)
-            and attr == "__dict__"
-        ):
+        if isinstance(obj, variables.PythonModuleVariable):
             # Above tp_getattro: its Unsupported is constant-folded to a stale
-            # read of the real module here for python-constant objects. Any
-            # view derived from the dict model is stale after a delete.
-            self.output.check_deleted_global_access(obj.value.__dict__, None)
-        elif (
-            self.output.deleted_globals_by_dict
-            and isinstance(obj, variables.PythonModuleVariable)
-            and not self.output.side_effects.has_pending_mutation_of_attr(obj, attr)
-        ):
-            self.output.check_deleted_global_access(obj.value.__dict__, attr)
+            # read of the real module here for python-constant objects.
+            obj.check_deleted_global_access(self, attr)
         try:
             if not _is_skipped_constant_property(self, obj, attr):
                 result = generic_getattr(self, obj, attr)
@@ -6677,7 +6639,7 @@ class InliningInstructionTranslator(InstructionTranslatorBase):
             super()._load_global(inst)
         else:
             _, fglobals_vt, global_source = self.get_globals_source_and_value(name)
-            if self._global_deleted_in_trace(fglobals_vt, name):
+            if self.output.side_effects.is_attr_deleted(fglobals_vt, name):
                 return self.load_builtin(inst)
             if self.output.side_effects.has_pending_mutation_of_attr(fglobals_vt, name):
                 self.push(self.output.side_effects.load_attr(fglobals_vt, name))
